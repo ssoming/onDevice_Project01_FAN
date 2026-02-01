@@ -7,18 +7,24 @@
 
 #include "stm32f4xx_hal.h"
 
-/* 팬 초기화: 내부 상태 초기화 + 팬 OFF 적용 */
-void Fan_Init(void);
+/* =========================================================
+ * Fan control
+ * - PWM: TIM2 CH1 (ex: PA0)
+ * - Step: 0 / 1 / 4 / 8
+ * - LED BAR: 0 / 1 / 4 / 8개 점등
+ * ========================================================= */
 
-/* 팬 단계 적용: step = 0 / 1 / 4 / 8 */
-void Fan_ApplyStep(uint8_t step);
+typedef enum {
+    FAN_STEP_0 = 0,
+    FAN_STEP_1 = 1,
+    FAN_STEP_4 = 4,
+    FAN_STEP_8 = 8
+} FanStep_t;
 
-/* 현재 단계 반환 */
-uint8_t Fan_GetStep(void);
-
-/* 단계 계산 유틸 */
-uint8_t Fan_NextUp(uint8_t cur);
-uint8_t Fan_NextDown(uint8_t cur);
-
+void     Fan_Init(TIM_HandleTypeDef *htim, uint32_t channel);
+void     Fan_ApplyStep(FanStep_t step);
+FanStep_t Fan_GetStep(void);
+FanStep_t Fan_NextUp(FanStep_t cur);
+FanStep_t Fan_NextDown(FanStep_t cur);
 
 #endif /* INC_FAN_H_ */

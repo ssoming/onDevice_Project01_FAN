@@ -1,92 +1,110 @@
-
 #include "servo.h"
-#include "tim.h"
 
-/* ===== 내부 상태 ===== */
-static uint8_t  s_swing_on = 0;
-static int16_t  s_swing_deg = 90;
-static int8_t   s_swing_dir = 1;
+/* 기본 값(원하면 main에서 Init 인자로 바꿔도 됨) */
+static TIM_HandleTypeDef *s_htim = NULL;
+static uint32_t s_ch = 0;
+static uint16_t s_min_us = 700u;
+static uint16_t s_max_us = 2300u;
+
+/* Swing 상태 */
+static uint8_t  s_on = 0u;
+static int16_t  s_deg = 90;
+static int8_t   s_dir = 1;
 static uint32_t s_last_ms = 0;
 
-/* ===== 서보 파라미터 ===== */
-#define SERVO_MIN_US   700u
-#define SERVO_MAX_US   2300u
-#define SW_LEFT_DEG    40
-#define SW_RIGHT_DEG   140
-#define SWING_PERIOD_MS 30u   /* 속도 조절 포인트 */
+static int16_t  s_left = 40;
+static int16_t  s_right = 140;
 
-/* ===== 내부 유틸 ===== */
-static void Servo_ApplyDeg(uint8_t deg)
+void Servo_Init(TIM_HandleTypeDef *htim, uint32_t channel,
+                uint16_t min_us, uint16_t max_us)
 {
-    if (deg > 180u) deg = 180u;
+    s_htim = htim;
+    s_ch = channel;
+    s_min_us = min_us;
+    s_max_us = max_us;
 
-    uint32_t us = SERVO_MIN_US
-                + ((uint32_t)(SERVO_MAX_US - SERVO_MIN_US) * deg) / 180u;
-
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, us);
-}
-
-/* ===== 외부 API ===== */
-void Servo_Init(void)
-{
-    s_swing_on = 0u;
-    s_swing_deg = 90;
-    s_swing_dir = 1;
-    s_last_ms = HAL_GetTick();
-
-    Servo_ApplyDeg((uint8_t)s_swing_deg);
+    /* PWM은 main에서 Start해도 되고 여기서 해도 됨 */
+    /* HAL_TIM_PWM_Start(s_htim, s_ch); */
 }
 
 void Servo_WriteDeg(uint8_t deg)
 {
-    s_swing_deg = deg;
-    Servo_ApplyDeg(deg);
+    if (deg > 180u) deg = 180u;
+
+    uint32_t us = (uint32_t)s_min_us
+                + ((uint32_t)(s_max_us - s_min_us) * (uint32_t)deg) / 180u;
+
+    __HAL_TIM_SET_COMPARE(s_htim, s_ch, us);
 }
 
-void Servo_SwingOn(uint8_t on)
+/* ---------------------------------------------------------
+ * Swing: 초기화 및 범위 설정
+ * --------------------------------------------------------- */
+void Swing_Init(int16_t start_deg, int16_t left_deg, int16_t right_deg)
+{
+    s_deg = start_deg;
+    s_left = left_deg;
+    s_right = right_deg;
+
+    if (s_left < 0) s_left = 0;
+    if (s_right > 180) s_right = 180;
+    if (s_left > s_right) { int16_t t = s_left; s_left = s_right; s_right = t; }
+
+    if (s_deg < s_left) s_deg = s_left;
+    if (s_deg > s_right) s_deg = s_right;
+
+    Servo_WriteDeg((uint8_t)s_deg);
+    s_on = 0u;
+    s_dir = 1;
+    s_last_ms = HAL_GetTick();
+}
+
+void Swing_SetOn(uint8_t on)
 {
     if (on)
     {
-        s_swing_on = 1u;
+        s_on = 1u;
         s_last_ms = HAL_GetTick();
 
-        if (s_swing_deg < SW_LEFT_DEG)  s_swing_deg = SW_LEFT_DEG;
-        if (s_swing_deg > SW_RIGHT_DEG) s_swing_deg = SW_RIGHT_DEG;
+        /* 범위 밖이면 클램프 */
+        if (s_deg < s_left)  s_deg = s_left;
+        if (s_deg > s_right) s_deg = s_right;
 
-        Servo_ApplyDeg((uint8_t)s_swing_deg);
+        /* 현재 각도 PWM 동기화 */
+        Servo_WriteDeg((uint8_t)s_deg);
     }
     else
     {
-        /* OFF → PWM 유지 = 위치 hold */
-        s_swing_on = 0u;
+        /* OFF: 각도 업데이트 중지, PWM은 유지 => 현재 위치 고정 */
+        s_on = 0u;
     }
 }
 
-uint8_t Servo_IsSwingOn(void)
+uint8_t Swing_IsOn(void)
 {
-    return s_swing_on;
+    return s_on;
 }
 
-void Servo_Task(void)
+void Swing_Task(void)
 {
-    if (!s_swing_on) return;
+    if (!s_on) return;
 
     uint32_t now = HAL_GetTick();
-    if (now - s_last_ms < SWING_PERIOD_MS) return;
+    if ((now - s_last_ms) < 30u) return;   /* 속도 고정 */
     s_last_ms = now;
 
-    s_swing_deg += (int16_t)(s_swing_dir * 2);
+    s_deg += (int16_t)(s_dir * 2);
 
-    if (s_swing_deg >= SW_RIGHT_DEG)
+    if (s_deg >= s_right)
     {
-        s_swing_deg = SW_RIGHT_DEG;
-        s_swing_dir = -1;
+        s_deg = s_right;
+        s_dir = -1;
     }
-    else if (s_swing_deg <= SW_LEFT_DEG)
+    else if (s_deg <= s_left)
     {
-        s_swing_deg = SW_LEFT_DEG;
-        s_swing_dir = 1;
+        s_deg = s_left;
+        s_dir = 1;
     }
 
-    Servo_ApplyDeg((uint8_t)s_swing_deg);
+    Servo_WriteDeg((uint8_t)s_deg);
 }

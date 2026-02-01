@@ -7,20 +7,22 @@
 
 #include "stm32f4xx_hal.h"
 
-/* 초기화 (PWM 시작은 main에서 수행) */
-void Servo_Init(void);
+/* =========================================================
+ * Servo + Swing control
+ * - PWM: TIM3 CH1 (ex: PA6)
+ * - Swing ON: 40~140도 왕복
+ * - Swing OFF: 현재 각도 유지(각도 업데이트 중단)
+ * ========================================================= */
 
-/* 각도 직접 지정 (0~180) */
+void Servo_Init(TIM_HandleTypeDef *htim, uint32_t channel,
+                uint16_t min_us, uint16_t max_us);
+
 void Servo_WriteDeg(uint8_t deg);
 
-/* Swing ON/OFF */
-void Servo_SwingOn(uint8_t on);
-
-/* 주기 호출 태스크 (main loop에서 호출) */
-void Servo_Task(void);
-
-/* 상태 조회 */
-uint8_t Servo_IsSwingOn(void);
-
+/* Swing API */
+void Swing_Init(int16_t start_deg, int16_t left_deg, int16_t right_deg);
+void Swing_SetOn(uint8_t on);
+uint8_t Swing_IsOn(void);
+void Swing_Task(void);
 
 #endif /* INC_SERVO_H_ */

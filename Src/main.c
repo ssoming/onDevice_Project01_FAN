@@ -29,13 +29,12 @@
 #include "button.h"
 #include "debounce.h"
 #include "fnd.h"
-#include "timer.h"
 #include "servo.h"
 #include "fan.h"
 
+#include "timer_app.h"
 
 #include <stdint.h>
-
 
 /* USER CODE END Includes */
 
@@ -60,24 +59,38 @@
 
 /* USER CODE BEGIN PV */
 
-/* =========================
-   BT (USART1)
-========================= */
-#define BT_BUF_SZ 32u
+
+/* =========================================================
+ * BT(UART1) RX Ring Buffer
+ * ========================================================= */
+#define BT_BUF_SZ  32u
+
 static uint8_t  s_bt_rx = 0;
 static volatile uint8_t  s_bt_buf[BT_BUF_SZ];
-static volatile uint16_t s_bt_w = 0, s_bt_r = 0;
+static volatile uint16_t s_bt_w = 0;
+static volatile uint16_t s_bt_r = 0;
 
-/* =========================
-   prototypes
-========================= */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+/* USER CODE BEGIN PFP */
+
 static void All_StopEverything(void);
+
 static void BT_Push(uint8_t b);
 static uint8_t BT_Pop(uint8_t *out);
 
-/* =========================
-   UART1 RX callback
-========================= */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+
+/* =========================================================
+ * UART RX Interrupt Callback
+ * ========================================================= */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1)
@@ -87,56 +100,36 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
-/* =========================
-   전체 정지 (Timer 만료 콜백)
-========================= */
-static void All_StopEverything(void)
-{
-    Timer_Cancel();
-    Fan_ApplyStep(0);
-    Servo_SwingOn(0);
-}
-
-/* =========================
-   BT ring buffer
-========================= */
+/* =========================================================
+ * BT Ring Buffer
+ * ========================================================= */
 static void BT_Push(uint8_t b)
 {
-    uint16_t nw = (uint16_t)((s_bt_w + 1u) % BT_BUF_SZ);
-    if (nw == s_bt_r) return;
-
+    uint16_t next = (uint16_t)((s_bt_w + 1u) % BT_BUF_SZ);
+    if (next == s_bt_r) return;   /* overflow → drop */
     s_bt_buf[s_bt_w] = b;
-    s_bt_w = nw;
+    s_bt_w = next;
 }
 
 static uint8_t BT_Pop(uint8_t *out)
 {
     if (s_bt_r == s_bt_w) return 0u;
-
     *out = s_bt_buf[s_bt_r];
     s_bt_r = (uint16_t)((s_bt_r + 1u) % BT_BUF_SZ);
     return 1u;
 }
 
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
-void SystemClock_Config(void);
-/* USER CODE BEGIN PFP */
-
-uint32_t millis()
+/* =========================================================
+ * 전체 정지 처리
+ * ========================================================= */
+static void All_StopEverything(void)
 {
-	return HAL_GetTick();
+    Timer_Cancel();
+    FND_AllOff();
+
+    Fan_ApplyStep(FAN_STEP_0);
+    Swing_SetOn(0);      /* 현재 각도 유지 */
 }
-static void All_StopEverything(void);
-static void BT_Push(uint8_t b);
-static uint8_t BT_Pop(uint8_t *out);
-
-
-/* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
 
 /* USER CODE END 0 */
 
@@ -179,17 +172,17 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 
-  /* 초기 상태 */
-  Fan_Init();       /* 내부에서 Fan_ApplyStep(0)까지 수행 */
-  Servo_Init();
+  /* Module init */
+  Fan_Init(&htim2, TIM_CHANNEL_1);
+
+  Servo_Init(&htim3, TIM_CHANNEL_1, 700, 2300);
+  Swing_Init(90, 40, 140);
+  Swing_SetOn(0);
+
+  FND_InitPins();
   FND_AllOff();
-  ledOff(8);
 
-  /* Timer init (expire -> All_StopEverything) */
-  Timer_Init(All_StopEverything);
-
-  /* BT RX start */
-  s_bt_w = s_bt_r = 0;
+  /* UART RX start */
   HAL_UART_Receive_IT(&huart1, &s_bt_rx, 1);
 
   /* USER CODE END 2 */
@@ -198,32 +191,58 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-  		/* ===== buttons ===== */
-  		        if (buttonGetPressed(0))   /* STOP */
-  		            All_StopEverything();
+  		/* 버튼 번호는 button.c 배열 순서에 맞춰 사용
+			 0:STOP(PC9), 1:UP(PB8), 2:DOWN(PB9), 3:SWING(PC7) */
 
-  		        if (buttonGetPressed(1))   /* UP */
-  		            Fan_ApplyStep(Fan_NextUp(Fan_GetStep()));
+		if (buttonGetPressed(0)) { All_StopEverything(); }
 
-  		        if (buttonGetPressed(2))   /* DOWN */
-  		            Fan_ApplyStep(Fan_NextDown(Fan_GetStep()));
+		if (buttonGetPressed(1))
+		{
+				FanStep_t next = Fan_NextUp(Fan_GetStep());
+				Fan_ApplyStep(next);
+		}
 
-  		        if (buttonGetPressed(3))   /* SWING */
-  		            Servo_SwingOn(!Servo_IsSwingOn());
+		if (buttonGetPressed(2))
+		{
+				FanStep_t next = Fan_NextDown(Fan_GetStep());
+				Fan_ApplyStep(next);
+		}
 
-  		        /* ===== BT input ===== */
-  		        uint8_t c;
-  		        while (BT_Pop(&c))
-  		        {
-  		            if (c >= '1' && c <= '9')
-  		            {
-  		                Timer_SetMinutes((uint8_t)(c - '0'));
-  		            }
-  		        }
+		if (buttonGetPressed(3))
+		{
+				Swing_SetOn((uint8_t)!Swing_IsOn());
+		}
 
-  		        /* ===== periodic tasks ===== */
-  		        Servo_Task();
-  		        Timer_Task1s_AndUpdateFND();
+		/* BT: '1'~'9' -> Timer_SetMinutes */
+		uint8_t c;
+		while (BT_Pop(&c))
+		{
+				if (c == '\r' || c == '\n' || c == ' ') continue;
+				if (c >= '1' && c <= '9')
+				{
+						uint8_t min = (uint8_t)(c - '0');
+						Timer_SetMinutes(min);
+						FND_Display(min); /* 세팅 직후 표시 */
+				}
+		}
+
+		/* Swing update */
+		Swing_Task();
+
+		/* Timer update */
+		uint8_t disp;
+		if (Timer_Task1s(&disp))
+		{
+				/* 만료 */
+				All_StopEverything();
+		}
+		else
+		{
+				/* 동작 중이면 disp 표시(옵션: remain_sec>0일 때만) */
+				if (Timer_GetRemainSec() > 0u)
+						FND_Display(disp);
+		}
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
